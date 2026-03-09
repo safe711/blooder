@@ -26,6 +26,11 @@
       expFill: document.getElementById("expFill"),
       expHudVal: document.getElementById("expHudVal"),
       levelPanelVal: document.getElementById("levelPanelVal"),
+      hpFilled: document.getElementById("hpFilled"),
+      hpEmpty: document.getElementById("hpEmpty"),
+      hpVal: document.getElementById("hpVal"),
+      knockbackDurationVal: document.getElementById("knockbackDurationVal"),
+      knockbackDistanceVal: document.getElementById("knockbackDistanceVal"),
     };
 
     const W = 426;
@@ -41,6 +46,10 @@
     const BULLET_COLLIDER_SIZE = 2;
     const ORB_MAGNET_RADIUS = 10;
     const GOBLIN_COUNT = 5;
+    const COMBAT_TUNING = {
+      goblinKnockbackDurationMs: 320,
+      goblinKnockbackDistancePx: 100,
+    };
 
     const palette = {
       groundA: "#4a5d48", groundB: "#556b50", groundC: "#3e523f", moss: "#66674b",
@@ -56,11 +65,26 @@
 
     const state = {
       keys: { KeyW: false, KeyA: false, KeyS: false, KeyD: false },
-      player: { x: 768, y: 768, speed: 132, lastHitAt: -10000, levelUpUntil: 0, heroIndex: 0 },
+      gameStarted: false,
+      player: {
+        x: 768,
+        y: 768,
+        speed: 132,
+        hp: 100,
+        maxHp: 100,
+        lastHitAt: -10000,
+        levelUpUntil: 0,
+        shockwaveUntil: 0,
+        heroIndex: 0,
+      },
       weapon: {
         magazineSize: 12,
         ammo: 12,
         fireCooldown: 500,
+        bulletSpeed: 260,
+        bulletCount: 1,
+        bulletSpreadDeg: 0,
+        bulletDamage: 5,
         lastFireAt: -10000,
         reloadDuration: 2000,
         idleReloadDelay: 2000,
@@ -204,5 +228,7 @@
         }
       }
     }
+
+
 
 

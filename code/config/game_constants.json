@@ -1,0 +1,7 @@
+﻿{
+  "version": 1,
+  "combat": {
+    "goblinKnockbackDurationMs": 320,
+    "goblinKnockbackDistancePx": 100
+  }
+}

@@ -62,6 +62,7 @@
           respawnAt: 0,
           cooldownUntil: now + 300 + Math.floor(rand() * 300),
           hitFlashUntil: 0,
+          knockback: null,
         };
       }
 
@@ -75,6 +76,7 @@
         respawnAt: 0,
         cooldownUntil: now + 300,
         hitFlashUntil: 0,
+        knockback: null,
       };
     }
 
@@ -284,6 +286,25 @@
       px(x, y, Math.max(1, Math.floor(barW * p)), barH, palette.reloadFill);
     }
 
+    
+    function drawShockwave(now) {
+      const remain = (state.player.shockwaveUntil || 0) - now;
+      if (remain <= 0) return;
+
+      const duration = Math.max(1, Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDurationMs) || 320);
+      const distance = Math.max(0, Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDistancePx) || 100);
+      const p = Math.max(0, Math.min(1, 1 - remain / duration));
+      const radius = 6 + p * distance;
+      const alpha = (1 - p) * 0.5;
+
+      bctx.save();
+      bctx.strokeStyle = `rgba(248,220,164,${alpha.toFixed(3)})`;
+      bctx.lineWidth = 2;
+      bctx.beginPath();
+      bctx.arc(CX, CY, radius, 0, Math.PI * 2);
+      bctx.stroke();
+      bctx.restore();
+    }
     function drawBullets() {
       for (let i = 0; i < state.bullets.length; i += 1) {
         const bullet = state.bullets[i];
@@ -363,4 +384,9 @@
         else drawPlayer(item.x, item.y, item.hitTint, now, item.glowStrength);
       }
     }
+
+
+
+
+
 

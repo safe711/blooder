@@ -162,7 +162,26 @@
 
     .hud-ammo svg { width: 16px; height: 16px; display: block; }
     .hud-ammo .ammo-cur { font-size: 13px; color: #f9e9be; font-weight: 700; min-width: 18px; text-align: right; }
-    .hud-ammo .ammo-max { font-size: 11px; color: #a3b2ca; }
+    
+    .hud-hp {
+      position: absolute;
+      left: 10px;
+      bottom: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(10, 15, 24, 0.82);
+      border: 1px solid rgba(180, 82, 90, 0.58);
+      border-radius: 6px;
+      padding: 3px 7px;
+      z-index: 6;
+      pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hud-hp .hp-filled { font-size: 12px; color: #ef5d63; letter-spacing: 1px; }
+    .hud-hp .hp-empty { font-size: 12px; color: #6b7386; letter-spacing: 1px; }
+    .hud-hp .hp-val { font-size: 11px; color: #f3d6d8; }
 
     .tag {
       margin-top: 12px;
@@ -231,7 +250,11 @@
           <div class="track"><div class="fill" id="expFill"></div></div>
           <span class="value" id="expHudVal">0/5</span>
         </div>
-
+        <div class="hud-hp" id="hpHud">
+          <span class="hp-filled" id="hpFilled">♥♥♥♥♥♥♥♥♥♥</span>
+          <span class="hp-empty" id="hpEmpty"></span>
+          <span class="hp-val" id="hpVal">100/100</span>
+        </div>
         <div class="hud-ammo">
           <svg viewBox="0 0 16 16" aria-hidden="true">
             <rect x="1" y="6" width="8" height="4" fill="#d2d8e6"></rect>
@@ -243,7 +266,7 @@
           <span class="ammo-max">/12</span>
         </div>
       </div>
-      <div class="tag">W/A/S/D 移动，鼠标左键开火（0.5秒CD）。5只哥布林、宝珠吸附经验、升级光效与音效。</div>
+      <div class="tag">W/A/S/D 移动，鼠标左键开火（0.5秒CD）。5只哥布林、受击冲击波击退、宝珠吸附经验、升级光效与音效。</div>
     </section>
 
     <aside class="panel">
@@ -260,6 +283,8 @@
       <div class="ctrl"><label>当前弹药<span class="value" id="ammoVal">12/12</span></label></div>
       <div class="ctrl"><label>武器状态<span class="value" id="reloadVal">待机</span></label></div>
       <div class="ctrl"><label>等级进度<span class="value" id="levelPanelVal">Lv.1 0/5</span></label></div>
+      <div class="ctrl"><label>弹射时间(ms)<span class="value" id="knockbackDurationVal">320</span></label></div>
+      <div class="ctrl"><label>弹射距离(px)<span class="value" id="knockbackDistanceVal">100</span></label></div>
 
       <span class="pill">0.5秒CD</span><span class="pill">5小怪</span><span class="pill">宝珠吸附</span><span class="pill">Lv100</span>
     </aside>
@@ -270,6 +295,11 @@
   <script src="code/threads/thread_B/20_systems.js"></script>
 </body>
 </html>
+
+
+
+
+
 
 
 
