@@ -90,16 +90,20 @@
       if (w.isReloading || w.ammo >= w.magazineSize) return;
       w.isReloading = true;
       w.reloadStart = now;
+      w.currentReloadDuration = typeof getCurrentReloadDurationMs === "function" ? getCurrentReloadDurationMs() : w.reloadDuration;
       playReloadSound();
     }
 
     function updateWeapon(now) {
       const w = state.weapon;
       if (w.isReloading) {
-        if (now - w.reloadStart >= w.reloadDuration) {
+        const activeReloadDuration = Math.max(100, Number(w.currentReloadDuration) || Number(w.reloadDuration) || 2000);
+        if (now - w.reloadStart >= activeReloadDuration) {
           w.isReloading = false;
           w.ammo = w.magazineSize;
           w.lastShotAt = now;
+          w.currentReloadDuration = w.reloadDuration;
+          if (typeof handleReloadCompleted === "function") handleReloadCompleted(now);
         }
         return;
       }
@@ -155,6 +159,702 @@
       px(sx - 3 * s + offset, sy - 12 * s, 6 * s, 3 * s, palette.leafC);
     }
 
+    const playerPortraitPaletteCache = {};
+    const playerAutoHeroCache = {};
+
+    function hashString(v) {
+      const str = String(v || "");
+      let h = 2166136261;
+      for (let i = 0; i < str.length; i += 1) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return h >>> 0;
+    }
+
+    function normalizePortraitPath(src) {
+      if (typeof src !== "string") return "";
+      return src.trim().replace(/\\/g, "/");
+    }
+
+    function hexFromRgb(r, g, b) {
+      const toHex = (v) => {
+        const n = Math.max(0, Math.min(255, Math.round(v)));
+        return n.toString(16).padStart(2, "0");
+      };
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+    function avgRegionColor(data, w, h, x0, y0, x1, y1) {
+      const sx = Math.max(0, Math.min(w - 1, Math.floor(x0)));
+      const ex = Math.max(0, Math.min(w, Math.ceil(x1)));
+      const sy = Math.max(0, Math.min(h - 1, Math.floor(y0)));
+      const ey = Math.max(0, Math.min(h, Math.ceil(y1)));
+      let rs = 0;
+      let gs = 0;
+      let bs = 0;
+      let n = 0;
+
+      for (let y = sy; y < ey; y += 1) {
+        for (let x = sx; x < ex; x += 1) {
+          const idx = (y * w + x) * 4;
+          const a = data[idx + 3];
+          if (a < 18) continue;
+          rs += data[idx + 0];
+          gs += data[idx + 1];
+          bs += data[idx + 2];
+          n += 1;
+        }
+      }
+
+      if (!n) return null;
+      return hexFromRgb(rs / n, gs / n, bs / n);
+    }
+    function rgbToHsv(r, g, b) {
+      const rn = r / 255;
+      const gn = g / 255;
+      const bn = b / 255;
+      const max = Math.max(rn, gn, bn);
+      const min = Math.min(rn, gn, bn);
+      const d = max - min;
+      let h = 0;
+      const s = max === 0 ? 0 : d / max;
+      const v = max;
+
+      if (d !== 0) {
+        if (max === rn) h = ((gn - bn) / d) % 6;
+        else if (max === gn) h = (bn - rn) / d + 2;
+        else h = (rn - gn) / d + 4;
+        h /= 6;
+        if (h < 0) h += 1;
+      }
+
+      return { h, s, v };
+    }
+
+    function colorDistL1(r1, g1, b1, r2, g2, b2) {
+      return Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2);
+    }
+
+    function quantizeHex(r, g, b) {
+      const q = (v) => Math.max(0, Math.min(255, Math.round(v / 32) * 32));
+      return hexFromRgb(q(r), q(g), q(b));
+    }
+
+    function buildSpriteRectsFromGrid(grid, gridW, gridH) {
+      const rects = [];
+      let active = {};
+
+      for (let y = 0; y < gridH; y += 1) {
+        const next = {};
+        let x = 0;
+        while (x < gridW) {
+          const key = grid[y * gridW + x];
+          if (!key) {
+            x += 1;
+            continue;
+          }
+
+          let x2 = x + 1;
+          while (x2 < gridW && grid[y * gridW + x2] === key) x2 += 1;
+          const w = x2 - x;
+          const sig = `${x}|${w}|${key}`;
+
+          if (active[sig]) {
+            active[sig].h += 1;
+            next[sig] = active[sig];
+          } else {
+            const r = { x, y, w, h: 1, key };
+            rects.push(r);
+            next[sig] = r;
+          }
+
+          x = x2;
+        }
+        active = next;
+      }
+
+      const ox = Math.floor(gridW / 2);
+      const oy = gridH - 1;
+      return rects.map((r) => [r.x - ox, r.y - oy, r.w, r.h, `@${r.key}`]);
+    }
+
+    function buildSpriteVisualFromPortraitImage(img) {
+      const side = 52;
+      const gridW = 16;
+      const gridH = 16;
+      const cvs = document.createElement("canvas");
+      cvs.width = side;
+      cvs.height = side;
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return null;
+
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return null;
+
+      ctx.clearRect(0, 0, side, side);
+      ctx.imageSmoothingEnabled = true;
+      const scale = Math.max(side / iw, side / ih);
+      const dw = Math.max(1, Math.floor(iw * scale));
+      const dh = Math.max(1, Math.floor(ih * scale));
+      const dx = Math.floor((side - dw) * 0.5);
+      const dy = Math.floor((side - dh) * 0.5);
+      ctx.drawImage(img, dx, dy, dw, dh);
+
+      const image = ctx.getImageData(0, 0, side, side);
+      const d = image.data;
+
+      const corners = [
+        [0, 0], [side - 1, 0], [0, side - 1], [side - 1, side - 1],
+        [Math.floor(side * 0.5), 0], [Math.floor(side * 0.5), side - 1],
+      ];
+      let br = 0; let bg = 0; let bb = 0; let bn = 0;
+      for (let i = 0; i < corners.length; i += 1) {
+        const x = corners[i][0];
+        const y = corners[i][1];
+        const idx = (y * side + x) * 4;
+        br += d[idx + 0];
+        bg += d[idx + 1];
+        bb += d[idx + 2];
+        bn += 1;
+      }
+      const bgr = bn ? br / bn : 0;
+      const bgg = bn ? bg / bn : 0;
+      const bgb = bn ? bb / bn : 0;
+
+      const fgMask = new Array(side * side).fill(false);
+      let fgCount = 0;
+      let minX = side; let minY = side; let maxX = -1; let maxY = -1;
+      for (let y = 0; y < side; y += 1) {
+        for (let x = 0; x < side; x += 1) {
+          const idx = (y * side + x) * 4;
+          const a = d[idx + 3];
+          if (a < 24) continue;
+          const r = d[idx + 0];
+          const g = d[idx + 1];
+          const b = d[idx + 2];
+          const dist = colorDistL1(r, g, b, bgr, bgg, bgb);
+          const fg = dist > 48 || a > 168;
+          if (!fg) continue;
+
+          const pos = y * side + x;
+          fgMask[pos] = true;
+          fgCount += 1;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+
+      if (fgCount < 30) {
+        minX = side; minY = side; maxX = -1; maxY = -1;
+        fgCount = 0;
+        for (let y = 0; y < side; y += 1) {
+          for (let x = 0; x < side; x += 1) {
+            const idx = (y * side + x) * 4;
+            if (d[idx + 3] < 32) continue;
+            const pos = y * side + x;
+            fgMask[pos] = true;
+            fgCount += 1;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (fgCount < 20 || maxX < minX || maxY < minY) return null;
+
+      const bw = Math.max(1, maxX - minX + 1);
+      const bh = Math.max(1, maxY - minY + 1);
+      const grid = new Array(gridW * gridH).fill("");
+      let filled = 0;
+
+      for (let gy = 0; gy < gridH; gy += 1) {
+        for (let gx = 0; gx < gridW; gx += 1) {
+          const sx = Math.max(0, Math.min(side - 1, Math.floor(minX + ((gx + 0.5) / gridW) * bw)));
+          const sy = Math.max(0, Math.min(side - 1, Math.floor(minY + ((gy + 0.5) / gridH) * bh)));
+          const srcPos = sy * side + sx;
+          if (!fgMask[srcPos]) continue;
+
+          const idx = srcPos * 4;
+          const r = d[idx + 0];
+          const g = d[idx + 1];
+          const b = d[idx + 2];
+          const key = quantizeHex(r, g, b);
+          grid[gy * gridW + gx] = key;
+          filled += 1;
+        }
+      }
+
+      if (filled < 12) return null;
+
+      const rects = buildSpriteRectsFromGrid(grid, gridW, gridH);
+      if (!rects.length) return null;
+
+      let footMin = gridW;
+      let footMax = -1;
+      for (let gy = gridH - 3; gy < gridH; gy += 1) {
+        for (let gx = 0; gx < gridW; gx += 1) {
+          if (!grid[gy * gridW + gx]) continue;
+          if (gx < footMin) footMin = gx;
+          if (gx > footMax) footMax = gx;
+        }
+      }
+      if (footMax < footMin) {
+        footMin = Math.floor(gridW * 0.3);
+        footMax = Math.floor(gridW * 0.7);
+      }
+
+      const ox = Math.floor(gridW / 2);
+      const shadowX = (footMin - ox) - 1;
+      const shadowW = Math.max(8, (footMax - footMin + 1) + 2);
+
+      return {
+        palette: {},
+        shadow: [shadowX, 1, shadowW, 2],
+        rects,
+      };
+    }
+
+    function extractPortraitAnalysis(img) {
+      const side = 40;
+      const cvs = document.createElement("canvas");
+      cvs.width = side;
+      cvs.height = side;
+      const ctx = cvs.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return null;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.clearRect(0, 0, side, side);
+
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return null;
+
+      const scale = Math.min(side / iw, side / ih);
+      const dw = Math.max(1, Math.floor(iw * scale));
+      const dh = Math.max(1, Math.floor(ih * scale));
+      const dx = Math.floor((side - dw) * 0.5);
+      const dy = Math.floor((side - dh) * 0.5);
+      ctx.drawImage(img, dx, dy, dw, dh);
+
+      const image = ctx.getImageData(0, 0, side, side);
+      const d = image.data;
+
+      const all = avgRegionColor(d, side, side, 0, 0, side, side) || "#6d7d9a";
+      const hair = avgRegionColor(d, side, side, 9, 2, 31, 12) || all;
+      const skin = avgRegionColor(d, side, side, 12, 10, 28, 20) || mixHex(all, "#f0c7a0", 0.45);
+      const body = avgRegionColor(d, side, side, 10, 19, 30, 31) || mixHex(all, "#3f5784", 0.45);
+      const accent = avgRegionColor(d, side, side, 6, 24, 34, 39) || mixHex(all, "#b94a58", 0.35);
+      const gear = avgRegionColor(d, side, side, 2, 16, 11, 31) || mixHex(body, "#d8dee9", 0.45);
+
+      let topDark = 0;
+      let topCount = 0;
+      let lowerSat = 0;
+      let lowerCount = 0;
+      let leftDark = 0;
+      let rightDark = 0;
+      let minX = side;
+      let maxX = -1;
+      let warm = 0;
+      let lumSum = 0;
+      let lum2Sum = 0;
+      let lumCount = 0;
+
+      for (let y = 0; y < side; y += 1) {
+        for (let x = 0; x < side; x += 1) {
+          const idx = (y * side + x) * 4;
+          const a = d[idx + 3];
+          if (a < 18) continue;
+
+          const r = d[idx + 0];
+          const g = d[idx + 1];
+          const b = d[idx + 2];
+          const lum = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 255;
+          const hsv = rgbToHsv(r, g, b);
+
+          if (y < side * 0.42) {
+            topCount += 1;
+            if (lum < 0.34) topDark += 1;
+          }
+          if (y >= side * 0.5) {
+            lowerSat += hsv.s;
+            lowerCount += 1;
+          }
+          if (x < side * 0.35 && lum < 0.4) leftDark += 1;
+          if (x > side * 0.65 && lum < 0.4) rightDark += 1;
+
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+
+          warm += (r - b) / 255;
+          lumSum += lum;
+          lum2Sum += lum * lum;
+          lumCount += 1;
+        }
+      }
+
+      const valid = Math.max(1, lumCount);
+      const variance = Math.max(0, lum2Sum / valid - (lumSum / valid) * (lumSum / valid));
+      const outlineSpread = (maxX >= minX) ? (maxX - minX + 1) / side : 0.6;
+
+      const profile = {
+        topDarkRatio: topDark / Math.max(1, topCount),
+        lowerSat: lowerSat / Math.max(1, lowerCount),
+        edgeDarkBias: (leftDark - rightDark) / Math.max(1, leftDark + rightDark),
+        outlineSpread,
+        warmth: warm / valid,
+        contrast: Math.sqrt(variance),
+      };
+
+      return {
+        palette: { hair, skin, body, accent, gear },
+        profile,
+      };
+    }
+    function ensurePortraitPaletteEntry(src) {
+      const key = normalizePortraitPath(src);
+      if (!key) return null;
+
+      let entry = playerPortraitPaletteCache[key];
+      if (entry) return entry;
+
+      entry = { status: "loading", palette: null, analysis: null };
+      playerPortraitPaletteCache[key] = entry;
+
+      const img = new Image();
+      img.onload = () => {
+        entry.analysis = extractPortraitAnalysis(img);
+        entry.palette = entry.analysis ? entry.analysis.palette : null;
+        entry.status = entry.analysis ? "ready" : "error";
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+          window.dispatchEvent(new CustomEvent("hero-visual-updated", { detail: { src: key } }));
+        }
+      };
+      img.onerror = () => {
+        entry.status = "error";
+      };
+      img.src = encodeURI(key);
+
+      return entry;
+    }
+    function detectHeroSilhouetteFeature(baseHero, portraitSrc) {
+      const id = String((baseHero && baseHero.id) || "").toLowerCase();
+      const name = String((baseHero && baseHero.name) || "").toLowerCase();
+      const src = String(portraitSrc || "").toLowerCase();
+      const token = `${id}|${name}|${src}`;
+
+      if (/(章鱼|克苏|触须|zhangyu|octo|cthul|tentacle|squid)/.test(token)) return "one_eye_octopus";
+      if (/(科学家|轮椅|喷射|scientist|wheelchair|jet|hojin|techchair)/.test(token)) return "jet_wheelchair";
+      if (/(恶魔|红魔|demon|devil|inferno|hell)/.test(token)) return "red_demon";
+      if (/(johney|john|baron|伯爵|初代|经典主角)/.test(token) || id === "baron") return "original_hero";
+      if (/(墨镜|雪茄|机械臂|cyborg|arm|cigar|shade)/.test(token)) return "sunglasses_cigar_arm";
+      if (id === "hunter") return "one_eye_octopus";
+      if (id === "duelist") return "jet_wheelchair";
+      return "classic";
+    }
+
+    function buildIconicLowResHeroSprite(baseHero, portraitSrc, analysis) {
+      const basePalette = baseHero && baseHero.palette ? baseHero.palette : {};
+      const sampled = analysis && analysis.palette ? analysis.palette : null;
+      const feature = detectHeroSilhouetteFeature(baseHero, portraitSrc);
+
+      let body = sampled && sampled.body ? sampled.body : (basePalette.body || palette.cloth);
+      let cape = sampled && sampled.accent ? sampled.accent : (basePalette.cape || palette.cape);
+      let skin = sampled && sampled.skin ? sampled.skin : (basePalette.skin || palette.skin);
+      let hair = sampled && sampled.hair ? sampled.hair : (basePalette.hair || palette.hair);
+      let gear = sampled && sampled.gear ? sampled.gear : (basePalette.gear || "#c5c2b8");
+      let eye = basePalette.eye || palette.eye;
+
+      if (feature === "original_hero") {
+        body = "#3d4f7e";
+        cape = "#c13f49";
+        skin = "#edbb92";
+        hair = "#34231d";
+        gear = "#d8d4c9";
+        eye = "#f6f1df";
+      } else if (feature === "red_demon") {
+        body = mixHex(body, "#9a2e2e", 0.64);
+        cape = mixHex(cape, "#cf4343", 0.7);
+        skin = mixHex(skin, "#b54242", 0.62);
+        hair = mixHex(hair, "#3a0f0f", 0.66);
+        eye = "#ffe4a2";
+      }
+
+      const leg = mixHex(body, "#1e2435", 0.42);
+      const trim = mixHex(cape, "#ddd2ba", 0.26);
+      let shadow = [-5, 1, 10, 2];
+      let rects = [
+        [-2, -1, 2, 2, "leg"], [1, -1, 2, 2, "leg"],
+        [-3, -7, 6, 6, "body"],
+        [-4, -6, 1, 4, "cape"], [3, -6, 1, 4, "cape"],
+        [-4, -12, 8, 5, "skin"],
+        [-4, -14, 8, 2, "hair"],
+        [-1, -10, 1, 1, "eye"], [1, -10, 1, 1, "eye"],
+        [4, -9, 1, 6, "gear"],
+      ];
+
+      if (feature === "original_hero") {
+        shadow = [-4, 1, 8, 2];
+        rects = [
+          [-2, -1, 2, 2, "leg"], [1, -1, 2, 2, "leg"],
+          [-3, -7, 6, 6, "body"],
+          [-4, -6, 1, 4, "cape"], [3, -6, 1, 4, "cape"],
+          [-4, -12, 8, 5, "skin"],
+          [-4, -14, 8, 2, "hair"],
+          [-1, -10, 1, 1, "eye"], [1, -10, 1, 1, "eye"],
+          [4, -9, 1, 6, "gear"],
+        ];
+      } else if (feature === "sunglasses_cigar_arm") {
+        shadow = [-6, 1, 12, 2];
+        rects = [
+          [-2, -1, 2, 2, "leg"], [1, -1, 2, 2, "leg"],
+          [-3, -7, 6, 6, "body"],
+          [-4, -12, 8, 5, "skin"],
+          [-4, -14, 8, 2, "hair"],
+          [-3, -11, 6, 2, "gear"],
+          [1, -9, 2, 1, "@b98044"], [3, -9, 1, 1, "@f5d8aa"],
+          [4, -8, 3, 1, "gear"], [6, -7, 1, 4, "gear"], [5, -6, 2, 2, "gear"],
+          [-5, -6, 1, 4, "cape"],
+          [-1, -10, 1, 1, "eye"], [1, -10, 1, 1, "eye"],
+        ];
+      } else if (feature === "one_eye_octopus") {
+        shadow = [-7, 1, 14, 2];
+        rects = [
+          [-5, -12, 10, 5, "hair"],
+          [-4, -8, 8, 6, "body"],
+          [-1, -10, 3, 2, "skin"],
+          [0, -10, 1, 1, "eye"],
+          [-6, -2, 2, 4, "cape"], [-4, 0, 2, 3, "cape"],
+          [-2, 1, 2, 3, "cape"], [0, 1, 2, 3, "cape"],
+          [2, 0, 2, 3, "cape"], [4, -2, 2, 4, "cape"],
+          [-5, -1, 1, 1, "@cfd8e2"], [4, -1, 1, 1, "@cfd8e2"],
+        ];
+      } else if (feature === "jet_wheelchair") {
+        shadow = [-10, 1, 20, 2];
+        rects = [
+          [-2, -11, 4, 4, "skin"],
+          [-3, -13, 6, 2, "hair"],
+          [-3, -7, 6, 4, "body"],
+          [-5, -4, 10, 2, "gear"],
+          [-8, -1, 4, 4, "gear"], [4, -1, 4, 4, "gear"],
+          [-6, 0, 2, 2, "hair"], [4, 0, 2, 2, "hair"],
+          [-9, 1, 1, 1, "@f08436"], [-10, 1, 1, 1, "@ffd38f"],
+          [8, 1, 1, 1, "@f08436"], [9, 1, 1, 1, "@ffd38f"],
+          [-1, -10, 1, 1, "eye"], [1, -10, 1, 1, "eye"],
+        ];
+      } else if (feature === "red_demon") {
+        shadow = [-8, 1, 16, 2];
+        rects = [
+          [-2, -1, 2, 2, "leg"], [1, -1, 2, 2, "leg"],
+          [-3, -7, 6, 6, "body"],
+          [-4, -12, 8, 5, "skin"],
+          [-5, -15, 2, 2, "hair"], [3, -15, 2, 2, "hair"],
+          [-8, -10, 3, 6, "cape"], [5, -10, 3, 6, "cape"],
+          [-1, -10, 1, 1, "eye"], [1, -10, 1, 1, "eye"],
+          [-6, -5, 2, 1, "cape"], [4, -5, 2, 1, "cape"],
+        ];
+      }
+
+      return {
+        palette: { leg, body, cape, skin, hair, eye, gear, trim },
+        shadow,
+        rects,
+      };
+    }
+
+    function buildAutoHeroSprite(baseHero, portraitSrc, analysis) {
+      const basePalette = baseHero && baseHero.palette ? baseHero.palette : {};
+      const sampled = analysis && analysis.palette ? analysis.palette : null;
+      const profile = analysis && analysis.profile ? analysis.profile : null;
+      const seed = hashString(`${baseHero && baseHero.id ? baseHero.id : "hero"}|${portraitSrc || "none"}`);
+      const bodySeed = hashString(`${baseHero && baseHero.id ? baseHero.id : "hero"}|form|${portraitSrc || "none"}`);
+
+      const body = sampled && sampled.body ? sampled.body : (basePalette.body || palette.cloth);
+      const cape = sampled && sampled.accent ? sampled.accent : (basePalette.cape || palette.cape);
+      const skin = sampled && sampled.skin ? sampled.skin : (basePalette.skin || palette.skin);
+      const hair = sampled && sampled.hair ? sampled.hair : (basePalette.hair || palette.hair);
+      const gear = sampled && sampled.gear ? sampled.gear : (basePalette.gear || "#c5c2b8");
+      const eye = basePalette.eye || palette.eye;
+      const leg = mixHex(body, "#1e2435", 0.42);
+      const trim = mixHex(cape, "#e6d9bf", 0.28);
+
+      let archetype = bodySeed % 5;
+      if (profile) {
+        if (profile.topDarkRatio > 0.52 && profile.lowerSat > 0.26) archetype = 1;
+        else if (profile.outlineSpread > 0.82 || profile.contrast > 0.28) archetype = 2;
+        else if (profile.lowerSat < 0.2 && profile.warmth < 0.02) archetype = 3;
+        else if (Math.abs(profile.edgeDarkBias) > 0.12) archetype = 4;
+        else archetype = 0;
+      }
+
+      const headW = archetype === 2 ? 9 : archetype === 3 ? 7 : 8;
+      const bodyW = archetype === 2 ? 8 : archetype === 3 ? 6 : archetype === 1 ? 5 : 6 + (seed % 2);
+      const bodyH = archetype === 3 ? 5 : archetype === 1 ? 7 : 6 + ((seed >> 2) % 2);
+      const hairMode = (seed >> 7) % 3;
+      const gearSide = (seed >> 9) % 2 === 0 ? 1 : -1;
+
+      const rects = [
+        [-2, -1, 2, 2, "leg"],
+        [1, -1, 2, 2, "leg"],
+        [-Math.floor(bodyW / 2), -7, bodyW, bodyH, "body"],
+        [-4, -12, headW, 5, "skin"],
+        [-4, -14, headW, 2, "hair"],
+        [-1, -10, 1, 1, "eye"],
+        [1, -10, 1, 1, "eye"],
+      ];
+
+      if (archetype === 0) {
+        rects.push([-Math.floor(bodyW / 2) - 1, -6, 1, 5, "cape"]);
+        rects.push([Math.floor(bodyW / 2), -6, 1, 5, "cape"]);
+      } else if (archetype === 1) {
+        rects.push([-Math.floor(bodyW / 2) - 2, -7, 2, 5, "cape"]);
+        rects.push([-Math.floor(bodyW / 2) - 3, -5, 1, 4, "cape"]);
+        rects.push([Math.floor(bodyW / 2), -6, 1, 3, "trim"]);
+      } else if (archetype === 2) {
+        rects.push([-Math.floor(bodyW / 2) - 2, -7, 2, 3, "gear"]);
+        rects.push([Math.floor(bodyW / 2), -7, 2, 3, "gear"]);
+        rects.push([-Math.floor(bodyW / 2), -3, bodyW, 1, "trim"]);
+      } else if (archetype === 3) {
+        rects.push([-5, -4, 10, 1, "body"]);
+        rects.push([-4, -3, 8, 2, "cape"]);
+        rects.push([-3, -1, 6, 2, "cape"]);
+        rects.push([-2, 1, 4, 1, "trim"]);
+      } else {
+        rects.push([gearSide > 0 ? Math.floor(bodyW / 2) : -Math.floor(bodyW / 2) - 2, -8, 2, 6, "cape"]);
+        rects.push([gearSide > 0 ? -Math.floor(bodyW / 2) - 2 : Math.floor(bodyW / 2), -7, 1, 3, "gear"]);
+      }
+
+      if (hairMode === 0) {
+        rects.push([-5, -13, 1, 3, "hair"]);
+      } else if (hairMode === 1) {
+        rects.push([3, -13, 2, 3, "hair"]);
+      } else {
+        rects.push([-5, -13, 1, 2, "hair"]);
+        rects.push([4, -13, 1, 2, "hair"]);
+      }
+
+      rects.push([gearSide > 0 ? Math.floor(bodyW / 2) + 1 : -Math.floor(bodyW / 2) - 2, -9, 1, 6, "gear"]);
+
+      const feature = detectHeroSilhouetteFeature(baseHero, portraitSrc);
+      let shadow = [-(Math.floor(bodyW / 2) + 2), 1, bodyW + 4, 2];
+
+      if (feature === "octopus") {
+        rects.push([-4, -10, 2, 2, "eye"]);
+        rects.push([2, -10, 2, 2, "eye"]);
+        rects.push([-3, -9, 1, 1, "hair"]);
+        rects.push([3, -9, 1, 1, "hair"]);
+
+        rects.push([-6, -1, 2, 3, "cape"]);
+        rects.push([-4, 0, 2, 3, "cape"]);
+        rects.push([-2, 1, 2, 3, "cape"]);
+        rects.push([0, 1, 2, 3, "cape"]);
+        rects.push([2, 0, 2, 3, "cape"]);
+        rects.push([4, -1, 2, 3, "cape"]);
+
+        rects.push([-5, -2, 1, 1, "trim"]);
+        rects.push([4, -2, 1, 1, "trim"]);
+        shadow = [-7, 1, 14, 2];
+      } else if (feature === "wheelchair") {
+        rects.push([-5, -6, 2, 6, "gear"]);
+        rects.push([-3, -4, 7, 2, "body"]);
+        rects.push([3, -5, 2, 4, "gear"]);
+
+        rects.push([-7, -1, 4, 4, "gear"]);
+        rects.push([3, -1, 4, 4, "gear"]);
+        rects.push([-6, 0, 2, 2, "hair"]);
+        rects.push([4, 0, 2, 2, "hair"]);
+        rects.push([-2, 1, 4, 1, "trim"]);
+        shadow = [-8, 1, 16, 2];
+      }
+
+      return {
+        palette: { leg, body, cape, skin, hair, eye, gear, trim },
+        shadow,
+        rects,
+      };
+    }
+
+    function cloneHeroVisual(baseHero) {
+      if (!baseHero || typeof baseHero !== "object") return null;
+      const paletteSrc = (baseHero.palette && typeof baseHero.palette === "object") ? baseHero.palette : {};
+      const rectsSrc = Array.isArray(baseHero.rects) ? baseHero.rects : [];
+      const shadowSrc = Array.isArray(baseHero.shadow) ? baseHero.shadow : [-4, 1, 8, 2];
+
+      const rects = [];
+      for (let i = 0; i < rectsSrc.length; i += 1) {
+        const r = rectsSrc[i];
+        if (!Array.isArray(r) || r.length < 5) continue;
+        rects.push([
+          Number(r[0]) || 0,
+          Number(r[1]) || 0,
+          Math.max(1, Number(r[2]) || 1),
+          Math.max(1, Number(r[3]) || 1),
+          String(r[4] || "body"),
+        ]);
+      }
+
+      return {
+        palette: {
+          leg: paletteSrc.leg || "#1e2435",
+          body: paletteSrc.body || palette.cloth,
+          cape: paletteSrc.cape || palette.cape,
+          skin: paletteSrc.skin || palette.skin,
+          hair: paletteSrc.hair || palette.hair,
+          eye: paletteSrc.eye || palette.eye,
+          gear: paletteSrc.gear || "#c5c2b8",
+          trim: paletteSrc.trim || paletteSrc.gear || "#c5c2b8",
+        },
+        shadow: [
+          Number(shadowSrc[0]) || -4,
+          Number(shadowSrc[1]) || 1,
+          Math.max(1, Number(shadowSrc[2]) || 8),
+          Math.max(1, Number(shadowSrc[3]) || 2),
+        ],
+        rects,
+      };
+    }
+
+    function buildHeroVisualFromDefinition(baseHero, portraitSrc, analysis) {
+      return buildIconicLowResHeroSprite(baseHero, portraitSrc, analysis);
+    }
+
+    function resolveHeroVisualForDefinition(hero) {
+      if (!hero) return null;
+      const src = normalizePortraitPath(hero.attributes && hero.attributes.portrait_file_a ? hero.attributes.portrait_file_a : "");
+      const key = `${hero.id || "hero"}|${src || "none"}`;
+      let entry = playerAutoHeroCache[key];
+
+      if (!entry) {
+        entry = {
+          visual: buildHeroVisualFromDefinition(hero, src, null),
+          appliedFromImage: false,
+        };
+        playerAutoHeroCache[key] = entry;
+      }
+
+      if (src) {
+        const paletteEntry = ensurePortraitPaletteEntry(src);
+        if (paletteEntry && paletteEntry.status === "ready" && paletteEntry.analysis && !entry.appliedFromImage) {
+          entry.visual = buildHeroVisualFromDefinition(hero, src, paletteEntry.analysis);
+          entry.appliedFromImage = true;
+          if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+            window.dispatchEvent(new CustomEvent("hero-visual-updated", { detail: { heroId: hero.id || "", src } }));
+          }
+        }
+      }
+
+      return entry.visual || null;
+    }
+
+    if (typeof window !== "undefined") {
+      window.resolveHeroVisualForDefinition = resolveHeroVisualForDefinition;
+    }
+
     function resolvePlayerHero() {
       const fallback = {
         palette: {
@@ -180,10 +880,18 @@
 
       if (typeof getCurrentHeroDefinition !== "function") return fallback;
       const hero = getCurrentHeroDefinition();
-      return hero || fallback;
+      if (!hero) return fallback;
+
+      const visual = resolveHeroVisualForDefinition(hero);
+      return visual || fallback;
     }
 
     function getHeroPartColor(hero, part, hitTint) {
+      if (typeof part === "string" && part.startsWith("@")) {
+        const direct = part.slice(1);
+        const strength = hitTint * 0.55;
+        return mixHex(direct, palette.hitRed, strength);
+      }
       const base = (hero.palette && hero.palette[part]) || "#ffffff";
       if (part === "eye") return base;
 
@@ -212,12 +920,23 @@
       const y = sy + bob;
       const hero = resolvePlayerHero();
 
+      const shotAge = t - Number(state.weapon && state.weapon.lastFireAt);
+      const firePose = Number.isFinite(shotAge) ? Math.max(0, 1 - shotAge / 120) : 0;
+      const recoilX = (Number(state.player && state.player.lastShotDirX) || 0) * -2 * firePose;
+      const recoilY = (Number(state.player && state.player.lastShotDirY) || 0) * -1.5 * firePose;
+
       if (glowStrength > 0) {
         const a = Math.max(0.12, glowStrength * 0.45);
         px(sx - 9, y - 17, 18, 18, `rgba(255,239,141,${a.toFixed(3)})`);
       }
 
-      drawHeroRects(hero, sx, y, hitTint);
+      drawHeroRects(hero, sx + recoilX, y + recoilY, hitTint);
+
+      if (firePose > 0.12) {
+        const fx = sx + (Number(state.player && state.player.lastShotDirX) || 0) * 7;
+        const fy = y + (Number(state.player && state.player.lastShotDirY) || 0) * 5 - 8;
+        px(fx - 1, fy - 1, 3, 3, "rgba(255,233,170,0.9)");
+      }
 
       if (glowStrength > 0.1) {
         const sparkPhase = Math.sin(t * 0.03);
@@ -276,7 +995,8 @@
 
     function drawReloadBar(now) {
       if (!state.weapon.isReloading) return;
-      const p = Math.max(0, Math.min(1, (now - state.weapon.reloadStart) / state.weapon.reloadDuration));
+      const activeReloadDuration = Math.max(100, Number(state.weapon.currentReloadDuration) || Number(state.weapon.reloadDuration) || 2000);
+      const p = Math.max(0, Math.min(1, (now - state.weapon.reloadStart) / activeReloadDuration));
       const barW = 24;
       const barH = 4;
       const x = CX - Math.floor(barW / 2);
@@ -291,10 +1011,11 @@
       const remain = (state.player.shockwaveUntil || 0) - now;
       if (remain <= 0) return;
 
-      const duration = Math.max(1, Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDurationMs) || 320);
-      const distance = Math.max(0, Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDistancePx) || 100);
-      const p = Math.max(0, Math.min(1, 1 - remain / duration));
-      const radius = 6 + p * distance;
+      const duration = Math.max(1, Number(state.player.shockwaveDurationMs) || Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDurationMs) || 320);
+      const radiusLimit = Math.max(0, Number(state.player.shockwaveVisualRadiusPx) || Number(COMBAT_TUNING && COMBAT_TUNING.goblinKnockbackDistancePx) || 100);
+      const startAt = Number(state.player.shockwaveStartedAt) || (state.player.shockwaveUntil - duration);
+      const p = Math.max(0, Math.min(1, (now - startAt) / duration));
+      const radius = 6 + p * radiusLimit;
       const alpha = (1 - p) * 0.5;
 
       bctx.save();
@@ -309,8 +1030,12 @@
       for (let i = 0; i < state.bullets.length; i += 1) {
         const bullet = state.bullets[i];
         const p = worldToScreen(bullet.x, bullet.y);
-        px(p.x - 1, p.y - 1, 2, 2, palette.bullet);
-        px(p.x, p.y, 1, 1, palette.bulletCore);
+        const size = Math.max(2, Math.round((Number(bullet.size) || 1) * 2));
+        const core = Math.max(1, size - 2);
+        const half = Math.floor(size / 2);
+        const coreHalf = Math.floor(core / 2);
+        px(p.x - half, p.y - half, size, size, palette.bullet);
+        px(p.x - coreHalf, p.y - coreHalf, core, core, palette.bulletCore);
       }
     }
 
@@ -343,6 +1068,50 @@
       }
       state.floatingDamage = next;
     }
+    function drawHitMarkers(now) {
+      if (!Array.isArray(state.hitMarkers) || !state.hitMarkers.length) return;
+
+      const next = [];
+      for (let i = 0; i < state.hitMarkers.length; i += 1) {
+        const item = state.hitMarkers[i];
+        const elapsed = now - item.start;
+        if (elapsed > item.duration) continue;
+
+        const p = elapsed / item.duration;
+        const wp = worldToScreen(item.x, item.y);
+        const sx = Math.round(wp.x);
+        const sy = Math.round(wp.y - 6 - p * 5);
+        const alpha = 1 - p;
+
+        bctx.globalAlpha = alpha;
+        if (item.type === "skull") {
+          px(sx - 4, sy - 5, 8, 6, "#511015");
+          px(sx - 3, sy - 4, 6, 4, "#d73d49");
+          px(sx - 3, sy + 1, 6, 2, "#b11d28");
+          px(sx - 2, sy + 3, 4, 2, "#d73d49");
+          px(sx - 2, sy - 2, 1, 1, "#140407");
+          px(sx + 1, sy - 2, 1, 1, "#140407");
+          px(sx - 1, sy - 1, 2, 1, "#140407");
+          px(sx - 1, sy + 2, 1, 2, "#140407");
+          px(sx + 0, sy + 2, 1, 2, "#140407");
+        } else {
+          px(sx - 1, sy - 1, 2, 2, "#ff9aa3");
+          px(sx - 6, sy - 1, 3, 2, "#d02832");
+          px(sx + 3, sy - 1, 3, 2, "#d02832");
+          px(sx - 1, sy - 6, 2, 3, "#d02832");
+          px(sx - 1, sy + 3, 2, 3, "#d02832");
+          px(sx - 4, sy - 4, 2, 1, "#7f1218");
+          px(sx + 2, sy - 4, 2, 1, "#7f1218");
+          px(sx - 4, sy + 3, 2, 1, "#7f1218");
+          px(sx + 2, sy + 3, 2, 1, "#7f1218");
+        }
+        bctx.globalAlpha = 1;
+
+        next.push(item);
+      }
+
+      state.hitMarkers = next;
+    }
 
     function drawVignette() {
       const grad = bctx.createRadialGradient(CX, CY, 60, CX, CY, 250);
@@ -350,6 +1119,68 @@
       grad.addColorStop(1, "rgba(3,8,14,0.24)");
       bctx.fillStyle = grad;
       bctx.fillRect(0, 0, W, H);
+    }
+
+    function drawTentacle(sx, sy, now, tentacle) {
+      const colors = {
+        outline: "#15211d",
+        dark: "#31423a",
+        mid: "#51655a",
+        light: "#7f9388",
+        tip: "#d8dfd5",
+      };
+      const idleFrame = (Math.floor(now / 90 + (tentacle.idleFrameOffset || 0)) % 6 + 6) % 6;
+      const idleOffsets = [-1.4, -0.8, -0.25, 0.45, 1.05, 0.2];
+      const swayPhase = now * 0.008 + (tentacle.swaySeed || 0);
+      const attackDuration = Math.max(1, Number(tentacle.attackAnimUntil) - Number(tentacle.attackStartedAt));
+      const attackProgress = tentacle.attackAnimUntil > now
+        ? Math.max(0, Math.min(1, (now - Number(tentacle.attackStartedAt || 0)) / attackDuration))
+        : 0;
+      const attackSwing = attackProgress > 0 ? Math.sin(attackProgress * Math.PI) : 0;
+      const baseLength = 34 + Math.sin(swayPhase * 0.75) * 1.8 + Math.sin(swayPhase * 2.1) * 0.9;
+      const attackReach = Math.max(baseLength + 12, Number(tentacle.attackDistancePx) || baseLength);
+      const length = baseLength + (attackReach - baseLength) * attackSwing;
+
+      let dirX = (Number(tentacle.attackDirX) || 0) * attackSwing * 0.92;
+      let dirY = -1 * (1 - attackSwing) + (Number(tentacle.attackDirY) || -1) * attackSwing;
+      const dirLen = Math.hypot(dirX, dirY) || 1;
+      dirX /= dirLen;
+      dirY /= dirLen;
+
+      const orthoX = -dirY;
+      const orthoY = dirX;
+      const attackSide = (Number(tentacle.attackPose) || 0) % 2 === 0 ? 1 : -1;
+
+      px(sx - 11, sy + 3, 22, 5, "rgba(10,16,22,0.42)");
+
+      const segmentCount = 11;
+      for (let i = 0; i < segmentCount; i += 1) {
+        const t = i / (segmentCount - 1);
+        const idleSway = (Math.sin(swayPhase + t * 2.9) * 3.6 + idleOffsets[idleFrame] * 1.8) * (1 - t * 0.62);
+        const softCurl = Math.sin(swayPhase * 1.6 + t * 4.2) * 1.4 * (1 - t);
+        const attackCurve = attackSwing * attackSide * Math.sin(t * Math.PI) * 4.6;
+        const forward = t * length + Math.sin(swayPhase * 1.1 + t * 5.1) * (1 - t) * 1.1;
+        const lateral = idleSway + softCurl + attackCurve;
+        const pxX = Math.round(sx + dirX * forward + orthoX * lateral);
+        const pxY = Math.round(sy - 2 + dirY * forward + orthoY * lateral);
+        const thickness = Math.max(3, Math.round(8 - t * 5 + attackSwing * (1 - t) * 1.4));
+        const inner = Math.max(1, thickness - 2);
+        const highlight = Math.max(1, inner - 2);
+        const color = t > 0.82 ? colors.tip : t > 0.56 ? colors.light : t > 0.2 ? colors.mid : colors.dark;
+
+        px(pxX - Math.ceil(thickness / 2), pxY - Math.ceil(thickness / 2), thickness, thickness, colors.outline);
+        px(pxX - Math.ceil(inner / 2), pxY - Math.ceil(inner / 2), inner, inner, color);
+        px(pxX - Math.ceil(highlight / 2), pxY - Math.ceil(highlight / 2), highlight, Math.max(1, highlight - 1), t > 0.72 ? colors.tip : colors.light);
+      }
+
+      const tipForward = length + 2 + attackSwing * 3;
+      const tipX = Math.round(sx + dirX * tipForward + orthoX * attackSide * attackSwing * 1.5);
+      const tipY = Math.round(sy - 2 + dirY * tipForward + orthoY * attackSide * attackSwing * 1.5);
+      px(tipX - 2, tipY - 2, 4, 4, colors.outline);
+      px(tipX - 1, tipY - 1, 2, 2, colors.tip);
+      if (attackSwing > 0.2) {
+        px(tipX + Math.round(dirX * 2) - 1, tipY + Math.round(dirY * 2) - 1, 2, 2, "rgba(240,246,232,0.85)");
+      }
     }
 
     function drawActors(now) {
@@ -366,6 +1197,13 @@
         toDraw.push({ type: "tree", x: p.x, y: p.y, size: tree.size, sway: Math.sin(now * 0.003 + i) * 1.1 });
       }
 
+      for (let i = 0; i < state.tentacles.length; i += 1) {
+        const tentacle = state.tentacles[i];
+        const tp = worldToScreen(tentacle.x, tentacle.y);
+        if (tp.x < -88 || tp.x > W + 88 || tp.y < -96 || tp.y > H + 88) continue;
+        toDraw.push({ type: "tentacle", x: tp.x, y: tp.y, tentacle });
+      }
+
       for (let i = 0; i < state.goblins.length; i += 1) {
         const g = state.goblins[i];
         if (!g.alive) continue;
@@ -380,10 +1218,60 @@
       for (let i = 0; i < toDraw.length; i += 1) {
         const item = toDraw[i];
         if (item.type === "tree") drawTree(item.x, item.y, item.size, item.sway);
+        else if (item.type === "tentacle") drawTentacle(item.x, item.y, now, item.tentacle);
         else if (item.type === "goblin") drawGoblin(item.x, item.y, now, item.flash);
         else drawPlayer(item.x, item.y, item.hitTint, now, item.glowStrength);
       }
     }
+
+    function drawMarkedTargets(now) {
+      const markedIds = Array.isArray(state.player.markedTargetIds) ? state.player.markedTargetIds : [];
+      if (!markedIds.length) return;
+
+      for (let i = 0; i < markedIds.length; i += 1) {
+        const id = markedIds[i];
+        let goblin = null;
+        for (let j = 0; j < state.goblins.length; j += 1) {
+          if (state.goblins[j].alive && state.goblins[j].id === id) {
+            goblin = state.goblins[j];
+            break;
+          }
+        }
+        if (!goblin) continue;
+
+        const aimY = wrap(goblin.y - 10, WORLD_H);
+        const p = worldToScreen(goblin.x, aimY);
+        const pulse = Math.sin(now * 0.012 + i * 0.8) * 0.5 + 0.5;
+        const radius = 7 + pulse * 2;
+        const alpha = 0.45 + pulse * 0.3;
+
+        bctx.save();
+        bctx.strokeStyle = `rgba(255,214,128,${alpha.toFixed(3)})`;
+        bctx.lineWidth = 1.5;
+        bctx.beginPath();
+        bctx.arc(Math.round(p.x), Math.round(p.y), radius, 0, Math.PI * 2);
+        bctx.stroke();
+        bctx.beginPath();
+        bctx.moveTo(Math.round(p.x - radius - 3), Math.round(p.y));
+        bctx.lineTo(Math.round(p.x - radius + 1), Math.round(p.y));
+        bctx.moveTo(Math.round(p.x + radius - 1), Math.round(p.y));
+        bctx.lineTo(Math.round(p.x + radius + 3), Math.round(p.y));
+        bctx.moveTo(Math.round(p.x), Math.round(p.y - radius - 3));
+        bctx.lineTo(Math.round(p.x), Math.round(p.y - radius + 1));
+        bctx.moveTo(Math.round(p.x), Math.round(p.y + radius - 1));
+        bctx.lineTo(Math.round(p.x), Math.round(p.y + radius + 3));
+        bctx.stroke();
+        bctx.restore();
+      }
+    }
+
+
+
+
+
+
+
+
 
 
 

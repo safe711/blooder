@@ -16,6 +16,8 @@
       --bg2: #17263a;
       --focus-top: 36%;
       --focus-bottom: 64%;
+      --game-w: 1920px;
+      --game-h: 1080px;
     }
 
     * { box-sizing: border-box; }
@@ -35,10 +37,10 @@
     }
 
     .shell {
-      width: min(1160px, 100%);
+      width: min(2360px, 100%);
       display: grid;
       gap: 18px;
-      grid-template-columns: 1fr 330px;
+      grid-template-columns: auto 360px;
       align-items: start;
     }
 
@@ -52,8 +54,9 @@
 
     .viewport {
       position: relative;
-      width: 100%;
+      width: min(var(--game-w), calc(100vw - 470px));
       aspect-ratio: 16 / 9;
+      max-height: calc(100vh - 90px);
       background: #0c1218;
       border: 1px solid #283446;
       border-radius: 10px;
@@ -234,6 +237,7 @@
 
     @media (max-width: 900px) {
       .shell { grid-template-columns: 1fr; }
+      .viewport { width: min(var(--game-w), calc(100vw - 40px)); }
     }
   </style>
 </head>
@@ -241,9 +245,9 @@
   <main class="shell">
     <section class="viewer">
       <div class="viewport" id="viewport">
-        <canvas id="base" width="426" height="240"></canvas>
-        <canvas id="blurTop" width="426" height="240"></canvas>
-        <canvas id="blurBottom" width="426" height="240"></canvas>
+        <canvas id="base" width="1920" height="1080"></canvas>
+        <canvas id="blurTop" width="1920" height="1080"></canvas>
+        <canvas id="blurBottom" width="1920" height="1080"></canvas>
 
         <div class="hud-exp">
           <span class="level" id="levelHud">Lv.1</span>
@@ -276,6 +280,7 @@
       <div class="ctrl"><label>移轴模糊强度<span class="value" id="blurVal">2.0px</span></label><input id="blurRange" type="range" min="0" max="5" step="0.1" value="2.0" /></div>
       <div class="ctrl"><label>焦平面上边界<span class="value" id="topVal">36%</span></label><input id="topRange" type="range" min="20" max="48" step="1" value="36" /></div>
       <div class="ctrl"><label>焦平面下边界<span class="value" id="bottomVal">64%</span></label><input id="bottomRange" type="range" min="52" max="84" step="1" value="64" /></div>
+      <div class="ctrl"><label>镜头距离<span class="value" id="cameraDistanceVal">0.22x</span></label><input id="cameraDistanceRange" type="range" min="0.18" max="1.20" step="0.02" value="0.22" /></div>
       <div class="ctrl"><label>主角坐标<span class="value" id="coordVal">0,0</span></label></div>
       <div class="ctrl"><label>碰撞状态<span class="value" id="contactVal">分离</span></label></div>
       <div class="ctrl"><label>最近伤害<span class="value" id="damageVal">-</span></label></div>
@@ -295,6 +300,8 @@
   <script src="code/stable/20_systems.js"></script>
 </body>
 </html>
+
+
 
 
 

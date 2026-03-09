@@ -22,6 +22,12 @@ if (Test-Path $targetDir) {
 New-Item -ItemType Directory -Path $targetDir | Out-Null
 Copy-Item -Path (Join-Path $stableDir '*.js') -Destination $targetDir -Force
 
+$configSource = Join-Path $root 'code\config\upgrade_effects.json'
+if (Test-Path $configSource) {
+  $configTargetDir = Join-Path $targetDir 'config'
+  New-Item -ItemType Directory -Path $configTargetDir -Force | Out-Null
+  Copy-Item -Path $configSource -Destination (Join-Path $configTargetDir 'upgrade_effects.json') -Force
+}
 $templatePath = Join-Path $root 'STYLE_PREVIEW.html'
 $raw = Get-Content $templatePath -Raw
 $raw = $raw -replace 'code/stable/00_core.js', "code/threads/$threadId/00_core.js"
@@ -34,3 +40,4 @@ Set-Content -Path $outHtml -Value $raw -Encoding utf8
 
 Write-Output "Created: $targetDir"
 Write-Output "Entry:   $outHtml"
+

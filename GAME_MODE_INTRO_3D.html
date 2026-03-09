@@ -162,7 +162,7 @@
     <aside class="panel">
       <h1>片头强化点</h1>
       <p>太阳和血月保持在左上高压构图，角色位于右下背身朝左上。枪击后使用“几大块玻璃”式碎裂，而不是细密裂纹。</p>
-      <p>当前版本为多角色玻璃反射：首个角色与其余角色会按碎片面积映射到不同玻璃块中，并统一做低明度、去底色、模糊反光处理。</p>
+      <p>当前版本为6角色写实反光：按碎片面积映射到6块玻璃中，保留每个角色的人物特征与面部可见性。</p>
 
       <span class="pill hot">左上超大天体</span>
       <span class="pill blood">血月压迫</span>
@@ -181,7 +181,7 @@
 
     const W = canvas.width;
     const H = canvas.height;
-    const IMPACT_CENTER = { x: 102, y: 58 };
+    const IMPACT_CENTER = { x: 186, y: 92 };
 
     ctx.imageSmoothingEnabled = false;
 
@@ -401,23 +401,51 @@
     for (let i = 0; i < shardOrder.length; i += 1) {
       shardRankByIdx[shardOrder[i].idx] = i;
     }
+    const skaterPosterSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 980">
+      <g fill="none" fill-rule="evenodd">
+        <path fill="#05070d" d="M102 940c-10-198 26-358 96-474 38-64 96-116 162-122 66 6 124 58 162 122 70 116 106 276 96 474H102z"/>
+        <path fill="#05070d" d="M228 388c-72 48-124 136-150 244-18 74-22 194-20 308h96c2-120 12-220 44-300 22-56 54-98 104-126l-74-126z"/>
+        <path fill="#05070d" d="M492 388c72 48 124 136 150 244 18 74 22 194 20 308h-96c-2-120-12-220-44-300-22-56-54-98-104-126l74-126z"/>
+        <ellipse cx="360" cy="232" rx="102" ry="126" fill="#06090f"/>
+        <path fill="#f6fcff" d="M280 238c22-38 58-52 96-46-8 42-30 78-76 98-18 8-38 6-54-6 8-20 18-34 34-46z"/>
+        <path fill="#f6fcff" d="M440 238c-22-38-58-52-96-46 8 42 30 78 76 98 18 8 38 6 54-6-8-20-18-34-34-46z"/>
+        <path fill="#ffffff" d="M360 436c34 0 58 26 58 60 0 18-6 38-14 54l-44 96-44-96c-8-16-14-36-14-54 0-34 24-60 58-60z"/>
+        <path fill="#ffffff" d="M360 462h8c22 0 44 8 64 20l70 42-14 24-64-38c-16-10-34-16-52-16h-12v-32zm-8 0v32h-12c-18 0-36 6-52 16l-64 38-14-24 70-42c20-12 42-20 64-20h8z"/>
+        <path fill="#ffffff" d="M360 520c14 0 26 10 26 24 0 10-6 20-14 28l-12 12-12-12c-8-8-14-18-14-28 0-14 12-24 26-24z"/>
+      </g>
+    </svg>`;
+    const skaterPosterSrc = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(skaterPosterSvg)}`;
 
-    const reflectionSlots = [
-      { key: "first", sources: ["art/hero/first_character.png", "art/hero/johney.png"] },
-      { key: "hojin", sources: ["art/hero/hojin.png"] },
-      { key: "kirua", sources: ["art/hero/kirua.png"] },
-      { key: "zhangyu", sources: ["art/hero/zhangyu.png"] },
-      { key: "demon", sources: ["art/hero/demon.png"] },
-      { key: "proton", sources: ["art/hero/质子.png"] },
+
+    const roleConfigs = [
+      { key: "gunman", sources: ["art/hero/johney.png"], frameY: 0.0, frameH: 0.7, yBias: 0.12 },
+      { key: "scientist", sources: ["art/hero/hojin.png"], frameY: 0.0, frameH: 0.74, yBias: -0.12 },
+      { key: "skater", sources: [skaterPosterSrc], frameY: 0.0, frameH: 0.78, yBias: -0.2, xBias: 0.02 },
+      { key: "octopus", sources: ["art/hero/zhangyu.png"], frameY: 0.0, frameH: 0.78, yBias: -0.08, xBias: 0.20 },
+      { key: "demon", sources: ["art/hero/demon.png"], frameY: 0.0, frameH: 0.7, yBias: -0.3 },
+      { key: "fan_girl", sources: ["art/hero/质子.png"], frameY: 0.0, frameH: 0.72, yBias: -0.28 },
     ];
 
-    const reflectionProcessed = reflectionSlots.map(() => null);
-    const reflectionReady = reflectionSlots.map(() => false);
+    const rolePortraits = roleConfigs.map(() => ({ canvas: null, ready: false }));
 
-    function processReflectionImage(sourceImg) {
-      const iw = sourceImg.naturalWidth || sourceImg.width;
-      const ih = sourceImg.naturalHeight || sourceImg.height;
-      if (!(iw > 0 && ih > 0)) return null;
+    function processRolePortrait(sourceImg) {
+      const sw = sourceImg.naturalWidth || sourceImg.width;
+      const sh = sourceImg.naturalHeight || sourceImg.height;
+      if (!(sw > 0 && sh > 0)) return null;
+
+      const maxDim = 760;
+      const ratio = Math.min(1, maxDim / Math.max(sw, sh));
+      const iw = Math.max(140, Math.round(sw * ratio));
+      const ih = Math.max(140, Math.round(sh * ratio));
+
+      // 原图保底：抠图失败时直接返回，保证角色可见。
+      const rawCanvas = document.createElement("canvas");
+      rawCanvas.width = iw;
+      rawCanvas.height = ih;
+      const rctx = rawCanvas.getContext("2d");
+      rctx.clearRect(0, 0, iw, ih);
+      rctx.imageSmoothingEnabled = true;
+      rctx.drawImage(sourceImg, 0, 0, iw, ih);
 
       const out = document.createElement("canvas");
       out.width = iw;
@@ -431,101 +459,201 @@
         const img = pctx.getImageData(0, 0, iw, ih);
         const d = img.data;
 
-        const samplePos = [
-          [0, 0],
-          [iw - 1, 0],
-          [0, ih - 1],
-          [iw - 1, ih - 1],
-          [Math.floor(iw * 0.5), 0],
-          [Math.floor(iw * 0.5), ih - 1],
-        ];
-
+        // 边界均值背景估计
         let br = 0;
         let bg = 0;
         let bb = 0;
         let bc = 0;
-        for (let i = 0; i < samplePos.length; i += 1) {
-          const sx = clamp(samplePos[i][0], 0, iw - 1);
-          const sy = clamp(samplePos[i][1], 0, ih - 1);
-          const idx = (sy * iw + sx) * 4;
-          br += d[idx];
-          bg += d[idx + 1];
-          bb += d[idx + 2];
-          bc += 1;
+        const stepX = Math.max(1, Math.floor(iw / 14));
+        const stepY = Math.max(1, Math.floor(ih / 14));
+
+        for (let x = 0; x < iw; x += stepX) {
+          const i0 = x * 4;
+          const i1 = ((ih - 1) * iw + x) * 4;
+          br += d[i0] + d[i1];
+          bg += d[i0 + 1] + d[i1 + 1];
+          bb += d[i0 + 2] + d[i1 + 2];
+          bc += 2;
+        }
+        for (let y = 0; y < ih; y += stepY) {
+          const i0 = (y * iw) * 4;
+          const i1 = (y * iw + (iw - 1)) * 4;
+          br += d[i0] + d[i1];
+          bg += d[i0 + 1] + d[i1 + 1];
+          bb += d[i0 + 2] + d[i1 + 2];
+          bc += 2;
         }
 
-        br /= bc;
-        bg /= bc;
-        bb /= bc;
+        br /= Math.max(1, bc);
+        bg /= Math.max(1, bc);
+        bb /= Math.max(1, bc);
 
-        for (let i = 0; i < d.length; i += 4) {
-          const r = d[i];
-          const g = d[i + 1];
-          const b = d[i + 2];
-          const a = d[i + 3];
-          if (a < 8) {
-            d[i + 3] = 0;
-            continue;
+        let minX = iw;
+        let minY = ih;
+        let maxX = -1;
+        let maxY = -1;
+        let fgCount = 0;
+
+        for (let y = 0; y < ih; y += 1) {
+          for (let x = 0; x < iw; x += 1) {
+            const p = y * iw + x;
+            const i = p * 4;
+            const r = d[i];
+            const g = d[i + 1];
+            const b = d[i + 2];
+            const a = d[i + 3];
+
+            if (a < 14) {
+              d[i + 3] = 0;
+              continue;
+            }
+
+            const dr = r - br;
+            const dg = g - bg;
+            const db = b - bb;
+            const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+            const sat = Math.max(r, g, b) - Math.min(r, g, b);
+            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+            const keepBg = clamp((dist - 16) / 76, 0, 1);
+            const keepSat = clamp((sat - 8) / 88, 0, 1);
+            const keepLum = clamp((165 - lum) / 240, 0, 1);
+            const keep = Math.max(keepBg, keepSat * 0.92, keepLum * 0.28);
+
+            if (keep < 0.06) {
+              d[i + 3] = Math.round(a * 0.04);
+              continue;
+            }
+
+            d[i] = Math.round(8 + r * 0.42 + (r + g + b) / 3 * 0.14);
+            d[i + 1] = Math.round(10 + g * 0.46 + (r + g + b) / 3 * 0.14);
+            d[i + 2] = Math.round(16 + b * 0.52 + (r + g + b) / 3 * 0.12);
+            d[i + 3] = Math.round(a * clamp(0.46 + keep * 0.44, 0.42, 0.9));
+
+            if (d[i + 3] > 18) {
+              fgCount += 1;
+              if (x < minX) minX = x;
+              if (y < minY) minY = y;
+              if (x > maxX) maxX = x;
+              if (y > maxY) maxY = y;
+            }
           }
-
-          const dr = r - br;
-          const dg = g - bg;
-          const db = b - bb;
-          const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-          const sat = Math.max(r, g, b) - Math.min(r, g, b);
-
-          const bgKeep = clamp((dist - 20) / 85, 0, 1);
-          const detailKeep = clamp((sat - 10) / 90, 0, 1);
-          const darkKeep = clamp((150 - lum) / 150, 0, 1);
-          const keep = clamp(Math.max(bgKeep, detailKeep * 0.92, darkKeep * 0.55), 0, 1);
-
-          const reflectTone = clamp(0.13 + keep * 0.22, 0, 0.45);
-          d[i] = Math.round(8 + r * reflectTone * 0.45);
-          d[i + 1] = Math.round(10 + g * reflectTone * 0.5);
-          d[i + 2] = Math.round(16 + b * reflectTone * 0.62);
-          d[i + 3] = Math.round(a * Math.pow(keep, 1.18) * 0.72);
         }
 
         pctx.putImageData(img, 0, 0);
-      } catch (err) {
-        pctx.globalCompositeOperation = "multiply";
-        pctx.fillStyle = "rgba(12,18,30,0.66)";
-        pctx.fillRect(0, 0, iw, ih);
-        pctx.globalCompositeOperation = "source-over";
-      }
 
-      return out;
+        // 若抠图结果太少，直接回退原图，确保可见。
+        if (fgCount < iw * ih * 0.035 || maxX < minX || maxY < minY) {
+          return rawCanvas;
+        }
+
+        const bw = maxX - minX + 1;
+        const bh = maxY - minY + 1;
+        const mx = Math.max(4, Math.round(bw * 0.05));
+        const my = Math.max(4, Math.round(bh * 0.05));
+        const sx = Math.max(0, minX - mx);
+        const sy = Math.max(0, minY - my);
+        const ex = Math.min(iw, maxX + mx + 1);
+        const ey = Math.min(ih, maxY + my + 1);
+        const cw = ex - sx;
+        const ch = ey - sy;
+
+        const cropped = document.createElement("canvas");
+        cropped.width = cw;
+        cropped.height = ch;
+        const cctx = cropped.getContext("2d");
+        cctx.clearRect(0, 0, cw, ch);
+        cctx.drawImage(out, sx, sy, cw, ch, 0, 0, cw, ch);
+        return cropped;
+      } catch (err) {
+        return rawCanvas;
+      }
     }
 
-    function loadReflectionSlot(slotIdx, sourceIdx = 0) {
-      const slot = reflectionSlots[slotIdx];
-      if (!slot || sourceIdx >= slot.sources.length) {
-        reflectionReady[slotIdx] = false;
+    function loadRolePortrait(roleIdx, sourceIdx = 0) {
+      const role = roleConfigs[roleIdx];
+      if (!role || sourceIdx >= role.sources.length) {
+        rolePortraits[roleIdx].ready = false;
         return;
       }
 
       const img = new Image();
       img.addEventListener("load", () => {
-        const processed = processReflectionImage(img);
-        reflectionProcessed[slotIdx] = processed;
-        reflectionReady[slotIdx] = !!processed;
+        const c = processRolePortrait(img);
+        rolePortraits[roleIdx].canvas = c;
+        rolePortraits[roleIdx].ready = !!c;
       });
-
       img.addEventListener("error", () => {
-        loadReflectionSlot(slotIdx, sourceIdx + 1);
+        loadRolePortrait(roleIdx, sourceIdx + 1);
       });
 
-      img.src = slot.sources[sourceIdx];
+      img.src = role.sources[sourceIdx];
       if (img.complete && img.naturalWidth > 0) {
-        const processed = processReflectionImage(img);
-        reflectionProcessed[slotIdx] = processed;
-        reflectionReady[slotIdx] = !!processed;
+        const c = processRolePortrait(img);
+        rolePortraits[roleIdx].canvas = c;
+        rolePortraits[roleIdx].ready = !!c;
       }
     }
 
-    for (let i = 0; i < reflectionSlots.length; i += 1) {
-      loadReflectionSlot(i);
+    for (let i = 0; i < roleConfigs.length; i += 1) {
+      loadRolePortrait(i);
+    }
+
+    function drawRoleReflection(roleIdx, x, y, w, h, alpha, tilt, mirror = false) {
+      const role = roleConfigs[roleIdx];
+      if (!role) return;
+
+
+      const portrait = rolePortraits[roleIdx];
+      if (!portrait || !portrait.ready || !portrait.canvas) {
+        // 加载期间兜底，避免碎片里完全空白。
+        ctx.save();
+        ctx.translate(x + w * 0.46, y + h * 0.58);
+        ctx.rotate(tilt);
+        ctx.scale(mirror ? -1 : 1, 1);
+        const bw = w * 0.32;
+        const bh = h * 0.44;
+        ctx.fillStyle = `rgba(10,14,22,${clamp(alpha * 0.45, 0.08, 0.35).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(-bw, bh * 0.9);
+        ctx.lineTo(-bw * 1.2, 0);
+        ctx.lineTo(-bw * 0.4, -bh * 0.95);
+        ctx.lineTo(bw * 0.4, -bh);
+        ctx.lineTo(bw, -bh * 0.25);
+        ctx.lineTo(bw * 1.1, bh * 0.86);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        return;
+      }
+
+      const src = portrait.canvas;
+      const sx = 0;
+      const sy = Math.floor(src.height * role.frameY);
+      const sw = src.width;
+      const sh = Math.max(8, Math.floor(src.height * role.frameH));
+
+      ctx.save();
+      ctx.translate(x + w * 0.5, y + h * 0.5);
+      ctx.rotate(tilt);
+      ctx.scale(mirror ? -1 : 1, 1);
+
+      const fit = Math.max(w / sw, h / sh) * 0.93;
+      const drawW = sw * fit;
+      const drawH = sh * fit;
+      const dx = -drawW * (0.5 - (role.xBias || 0));
+      const dy = -drawH * (0.5 + role.yBias);
+
+      ctx.globalAlpha = clamp(alpha, 0, 0.9);
+      ctx.filter = "blur(0.28px)";
+      ctx.drawImage(src, sx, sy, sw, sh, dx, dy, drawW, drawH);
+      ctx.filter = "none";
+
+      ctx.globalCompositeOperation = "source-atop";
+      ctx.fillStyle = `rgba(10,16,28,${(0.2 * alpha).toFixed(3)})`;
+      ctx.fillRect(dx, dy, drawW, drawH);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.restore();
     }
 
     function drawPathProgress(points, progress, color, width = 1) {
@@ -573,16 +701,6 @@
       ctx.stroke();
     }
 
-    function polygonCentroid(points) {
-      let x = 0;
-      let y = 0;
-      for (let i = 0; i < points.length; i += 1) {
-        x += points[i].x;
-        y += points[i].y;
-      }
-      return { x: x / points.length, y: y / points.length };
-    }
-
     function polygonBounds(points) {
       let minX = Infinity;
       let minY = Infinity;
@@ -598,16 +716,14 @@
 
       return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
     }
-
     function drawShardReflection(piece, idx, reveal) {
       const bounds = polygonBounds(piece);
       if (bounds.w < 24 || bounds.h < 20) return;
 
       const rank = shardRankByIdx[idx];
-      if (rank < 0 || rank >= reflectionSlots.length) return;
-      if (!reflectionReady[rank] || !reflectionProcessed[rank]) return;
+      if (rank < 0 || rank >= roleConfigs.length) return;
 
-      const reflectionCanvas = reflectionProcessed[rank];
+      const roleIdx = rank;
 
       ctx.save();
       polygonPath(piece);
@@ -620,31 +736,21 @@
       ctx.fillStyle = glassBase;
       ctx.fillRect(bounds.x - 8, bounds.y - 8, bounds.w + 16, bounds.h + 16);
 
-      const padX = Math.max(6, bounds.w * 0.1);
-      const padY = Math.max(6, bounds.h * 0.1);
+      const padX = Math.max(4, bounds.w * 0.06);
+      const padY = Math.max(4, bounds.h * 0.06);
       const boxX = bounds.x + padX;
       const boxY = bounds.y + padY;
       const boxW = Math.max(8, bounds.w - padX * 2);
       const boxH = Math.max(8, bounds.h - padY * 2);
 
-      const iw = reflectionCanvas.width;
-      const ih = reflectionCanvas.height;
-      if (iw > 0 && ih > 0) {
-        const fit = Math.min(boxW / iw, boxH / ih);
-        const drawW = iw * fit;
-        const drawH = ih * fit;
-        const drawX = boxX + (boxW - drawW) * 0.5;
-        const drawY = boxY + (boxH - drawH) * 0.5;
+      const alpha = clamp((0.66 + (rank % 3) * 0.06) * reveal + 0.08, 0, 0.9);
+      const tilt = (idx % 5 - 2) * 0.05;
 
-        ctx.imageSmoothingEnabled = true;
-        ctx.globalAlpha = clamp((0.5 + (rank % 3) * 0.08) * reveal + 0.06, 0, 0.72);
-        ctx.filter = `blur(${(0.9 + (1 - reveal) * 0.75).toFixed(2)}px)`;
-        ctx.drawImage(reflectionCanvas, drawX, drawY, drawW, drawH);
-        ctx.filter = "none";
+      drawRoleReflection(roleIdx, boxX, boxY, boxW, boxH, alpha, tilt, idx % 2 === 0);
 
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = `rgba(10,16,28,${(0.34 * reveal).toFixed(3)})`;
-        ctx.fillRect(drawX - 2, drawY - 2, drawW + 4, drawH + 4);
+
+      if (roleConfigs[roleIdx] && roleConfigs[roleIdx].key !== "skater") {
+        drawRoleReflection(roleIdx, boxX + 1.2, boxY + 0.8, boxW, boxH, alpha * 0.42, tilt * 0.7, idx % 2 !== 0);
       }
 
       ctx.globalCompositeOperation = "screen";
@@ -965,6 +1071,18 @@
   </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

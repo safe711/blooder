@@ -12,15 +12,19 @@
       blurRange: document.getElementById("blurRange"),
       topRange: document.getElementById("topRange"),
       bottomRange: document.getElementById("bottomRange"),
+      cameraDistanceRange: document.getElementById("cameraDistanceRange"),
       blurVal: document.getElementById("blurVal"),
       topVal: document.getElementById("topVal"),
       bottomVal: document.getElementById("bottomVal"),
+      cameraDistanceVal: document.getElementById("cameraDistanceVal"),
       coordVal: document.getElementById("coordVal"),
       contactVal: document.getElementById("contactVal"),
       damageVal: document.getElementById("damageVal"),
       goblinCountVal: document.getElementById("goblinCountVal"),
       ammoVal: document.getElementById("ammoVal"),
       ammoHudVal: document.getElementById("ammoHudVal"),
+      ammoHudMax: document.querySelector(".hud-ammo .ammo-max"),
+      ammoHudIcon: document.querySelector(".hud-ammo svg"),
       reloadVal: document.getElementById("reloadVal"),
       levelHud: document.getElementById("levelHud"),
       expFill: document.getElementById("expFill"),
@@ -33,8 +37,8 @@
       knockbackDistanceVal: document.getElementById("knockbackDistanceVal"),
     };
 
-    const W = 426;
-    const H = 240;
+    const W = base.width || 1920;
+    const H = base.height || 1080;
     const CX = Math.floor(W / 2);
     const CY = Math.floor(H / 2);
     const WORLD_W = 1536;
@@ -50,6 +54,29 @@
       goblinKnockbackDurationMs: 320,
       goblinKnockbackDistancePx: 100,
     };
+    const CAMERA_DISTANCE_MIN = 0.35;
+    const CAMERA_DISTANCE_MAX = 1.0;
+    const CAMERA_DISTANCE_DEFAULT = 0.62;
+    const camera = { distance: CAMERA_DISTANCE_DEFAULT };
+
+    function setCameraDistance(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        camera.distance = CAMERA_DISTANCE_DEFAULT;
+        return;
+      }
+      camera.distance = Math.max(CAMERA_DISTANCE_MIN, Math.min(CAMERA_DISTANCE_MAX, n));
+    }
+
+    function getCameraDistance() {
+      return camera.distance;
+    }
+
+    function getCameraZoom() {
+      const d = Number(camera.distance);
+      if (!Number.isFinite(d) || d <= 0.0001) return 1;
+      return 1 / d;
+    }
 
     const palette = {
       groundA: "#4a5d48", groundB: "#556b50", groundC: "#3e523f", moss: "#66674b",
@@ -66,6 +93,7 @@
     const state = {
       keys: { KeyW: false, KeyA: false, KeyS: false, KeyD: false },
       gameStarted: false,
+      gameOver: false,
       player: {
         x: 768,
         y: 768,
@@ -74,28 +102,63 @@
         maxHp: 100,
         lastHitAt: -10000,
         levelUpUntil: 0,
+        shockwaveStartedAt: 0,
         shockwaveUntil: 0,
+        shockwaveDurationMs: 0,
+        shockwaveVisualRadiusPx: 0,
+        isMoving: false,
+        markedTargetIds: [],
         heroIndex: 0,
       },
       weapon: {
+        baseMagazineSize: 12,
         magazineSize: 12,
         ammo: 12,
         fireCooldown: 500,
         bulletSpeed: 260,
         bulletCount: 1,
         bulletSpreadDeg: 0,
+        baseBulletSize: 1,
+        bulletSize: 1,
+        baseBulletKnockback: 1,
+        bulletKnockback: 1,
+        baseBulletPierce: 0,
+        bulletPierce: 0,
         bulletDamage: 5,
         lastFireAt: -10000,
+        baseReloadDuration: 2000,
         reloadDuration: 2000,
+        currentReloadDuration: 2000,
         idleReloadDelay: 2000,
         isReloading: false,
         reloadStart: 0,
         lastShotAt: performance.now(),
       },
       progress: { level: 1, maxLevel: 100, xpInLevel: 0, totalXp: 0 },
-      goblins: [], bullets: [], orbs: [], floatingDamage: [], trees: [],
+      upgrades: {
+        config: null,
+        pendingChoices: [],
+        isChoosing: false,
+        queuedLevelUps: 0,
+        selectedChoiceId: "",
+        treeLevels: {},
+        treeSelectedNodes: {},
+        selectedNodeIds: [],
+        statBonuses: {},
+        runtimeEffects: {
+          trailFlame: null,
+          periodicShockwave: null,
+          stationaryFreeShotChance: 0,
+          executeLowHpThreshold: 0,
+          deadeyeMarks: null,
+          pierceDeadEnemies: false,
+          reloadDamageBoost: null,
+          reloadKillStack: null,
+        },
+      },
+      goblins: [], bullets: [], orbs: [], floatingDamage: [], hitMarkers: [], flameTrails: [], tentacles: [], trees: [],
       inContact: false, lastDamage: null,
-      rngSeed: 20260309, nextGoblinId: 1,
+      rngSeed: 20260309, nextGoblinId: 1, nextTentacleId: 1,
     };
 
     let audioCtx = null;
@@ -203,6 +266,9 @@
     function onLevelUp(now) {
       state.player.levelUpUntil = now + 900;
       playLevelUpSound();
+      if (typeof onLevelUpSkillRoll === "function") {
+        onLevelUpSkillRoll(now);
+      }
     }
 
     function addExp(amount, now) {
@@ -228,6 +294,25 @@
         }
       }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
